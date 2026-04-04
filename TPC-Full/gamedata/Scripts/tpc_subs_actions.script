@@ -1,0 +1,433 @@
+-- tpc_subs_actions.script
+-- Subs spawn Monolith hunters
+-- Supports both queue formats:
+--   user|event_type|tier|message
+--   user|event_type|tier|count|message
+
+local queue_file_candidates = {
+    "gamedata\\scripts\\tpc_subs_queue.txt",
+    "..\\gamedata\\scripts\\tpc_subs_queue.txt",
+    "..\\..\\gamedata\\scripts\\tpc_subs_queue.txt",
+    "tpc_subs_queue.txt"
+}
+
+local queue_file = nil
+local last_time = 0
+
+math.randomseed(time_global())
+
+printf("[TPC-SUBS] === Monolith Hit Squad Loaded ===")
+
+-- Monolith icons from twitch_icons.xml / twitch_icons.dds
+local monolith_icons = {
+    "crc_icon_actor_monolith_1",
+    "crc_icon_actor_monolith_2",
+    "crc_icon_actor_monolith_3",
+    "crc_icon_actor_monolith_4",
+    "crc_icon_actor_monolith_5",
+    "crc_icon_actor_monolith_6",
+    "crc_icon_actor_monolith_7",
+    "crc_icon_actor_monolith_8"
+}
+
+local function get_monolith_icon()
+    if not monolith_icons or #monolith_icons == 0 then
+        return "ui_inGame2_Messages"
+    end
+    return monolith_icons[math.random(#monolith_icons)]
+end
+
+local function find_existing_file(candidates, label)
+    for i = 1, #candidates do
+        local path = candidates[i]
+        local f = io.open(path, "r")
+        if f then
+            f:close()
+            printf("[TPC-SUBS] " .. label .. " found: " .. path)
+            return path
+        end
+    end
+
+    printf("[TPC-SUBS] " .. label .. " not found")
+    return nil
+end
+
+local function read_file()
+    if not queue_file then
+        queue_file = find_existing_file(queue_file_candidates, "Queue file")
+        if not queue_file then
+            return nil
+        end
+    end
+
+    local f = io.open(queue_file, "r")
+    if not f then
+        printf("[TPC-SUBS] Queue file vanished, re-probing")
+        queue_file = nil
+        return nil
+    end
+
+    local content = f:read("*all")
+    f:close()
+
+    return content or ""
+end
+
+local function clear_queue_file()
+    if not queue_file then
+        return false
+    end
+
+    local f = io.open(queue_file, "w")
+    if not f then
+        printf("[TPC-SUBS] Failed to clear queue file: " .. tostring(queue_file))
+        return false
+    end
+
+    f:write("")
+    f:close()
+
+    printf("[TPC-SUBS] Queue file cleared")
+    return true
+end
+
+local function get_lines(content)
+    local lines = {}
+
+    for line in string.gmatch(content, "[^\r\n]+") do
+        if line ~= "" then
+            table.insert(lines, line)
+        end
+    end
+
+    return lines
+end
+
+local function sanitize_text(text)
+    if not text then
+        return ""
+    end
+
+    text = tostring(text)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    text = string.gsub(text, "%s%s+", " ")
+    text = string.gsub(text, "\t", " ")
+
+    return text
+end
+
+local function parse_sub_line(line)
+    line = sanitize_text(line)
+    if line == "" then
+        return nil, nil, nil, nil, nil
+    end
+
+    -- New 5-field format:
+    -- user|event_type|tier|count|message
+    local p1, p2, p3, p4, p5 = string.match(line, "^(.-)|(.-)|(.-)|(.-)|(.*)$")
+    if p1 and p2 and p3 and p4 and p5 ~= nil then
+        local user = sanitize_text(p1)
+        local event_type = sanitize_text(p2)
+        local tier = sanitize_text(p3)
+        local count = tonumber(sanitize_text(p4)) or 1
+        local msg = sanitize_text(p5)
+
+        if user ~= "" and event_type ~= "" and tier ~= "" then
+            if count < 1 then
+                count = 1
+            end
+            return user, event_type, tier, count, msg
+        end
+    end
+
+    -- Old 4-field format:
+    -- user|event_type|tier|message
+    local o1, o2, o3, o4 = string.match(line, "^(.-)|(.-)|(.-)|(.*)$")
+    if o1 and o2 and o3 and o4 ~= nil then
+        local user = sanitize_text(o1)
+        local event_type = sanitize_text(o2)
+        local tier = sanitize_text(o3)
+        local msg = sanitize_text(o4)
+
+        if user ~= "" and event_type ~= "" and tier ~= "" then
+            return user, event_type, tier, 1, msg
+        end
+    end
+
+    printf("[TPC-SUBS] Bad subs line: " .. tostring(line))
+    return nil, nil, nil, nil, nil
+end
+
+local function get_spawn_count(event_type, count)
+    if event_type == "community_sub_gift" then
+        if count > 20 then
+            count = 20
+        end
+        return count
+    end
+
+    return 1
+end
+
+local function get_spawn_section_for_sub(tier)
+    -- Prime = free, so rookie Monolith only
+    if string.lower(tier) == "prime" then
+        return "sim_default_monolith_1"
+    end
+
+    -- All other subs: random armor/strength variant
+    local pool = {
+        "sim_default_monolith_1",
+        "sim_default_monolith_2",
+        "sim_default_monolith_3"
+    }
+
+    return pool[math.random(#pool)]
+end
+
+local function get_spawn_position(index)
+    if not db.actor then
+        return nil, nil, nil
+    end
+
+    local pos = db.actor:position()
+    if not pos then
+        return nil, nil, nil
+    end
+
+    local angle = (index - 1) * 0.8
+    local distance = 8 + (index * 1.5)
+
+    local spawn_pos = vector()
+    spawn_pos:set(
+        pos.x + math.cos(angle) * distance,
+        pos.y,
+        pos.z + math.sin(angle) * distance
+    )
+
+    local lv = db.actor:level_vertex_id()
+    local gv = db.actor:game_vertex_id()
+
+    return spawn_pos, lv, gv
+end
+
+local function resolve_spawned_object(spawned)
+    local obj = nil
+
+    pcall(function()
+        if type(spawned) == "number" and level and level.object_by_id then
+            obj = level.object_by_id(spawned)
+        elseif type(spawned) == "userdata" then
+            obj = spawned
+        end
+    end)
+
+    return obj
+end
+
+local function try_configure_hunter(obj, user, tier)
+    if not obj then
+        return
+    end
+
+    -- Name hunter after subscriber
+    pcall(function()
+        if obj.set_character_name then
+            obj:set_character_name(user)
+            printf("[TPC-SUBS] Set hunter name: " .. tostring(user))
+        elseif obj.set_name then
+            obj:set_name(user)
+            printf("[TPC-SUBS] Set hunter name via set_name: " .. tostring(user))
+        end
+    end)
+
+    -- Monolith hostile behavior
+    pcall(function()
+        if obj.set_character_community then
+            obj:set_character_community("monolith")
+            printf("[TPC-SUBS] Set community to monolith")
+        elseif obj.set_community then
+            obj:set_community("monolith")
+            printf("[TPC-SUBS] Set community to monolith")
+        end
+    end)
+
+    pcall(function()
+        if obj.set_relation then
+            obj:set_relation(db.actor, relation_registry.ENEMY)
+            printf("[TPC-SUBS] Set relation to ENEMY")
+        end
+    end)
+
+    pcall(function()
+        if obj.force_set_goodwill then
+            obj:force_set_goodwill(-5000, db.actor)
+            printf("[TPC-SUBS] Applied negative goodwill")
+        elseif obj.set_goodwill then
+            obj:set_goodwill(-5000, db.actor)
+            printf("[TPC-SUBS] Applied negative goodwill")
+        end
+    end)
+
+    pcall(function()
+        if obj.set_best_enemy then
+            obj:set_best_enemy(db.actor)
+            printf("[TPC-SUBS] Set actor as best enemy")
+        end
+    end)
+
+    -- Legend rank for all non-prime subs
+    if string.lower(tier) ~= "prime" then
+        pcall(function()
+            if obj.set_character_rank then
+                obj:set_character_rank("legend")
+                printf("[TPC-SUBS] Tried set_character_rank('legend')")
+            end
+        end)
+
+        pcall(function()
+            if obj.change_character_rank then
+                obj:change_character_rank("legend")
+                printf("[TPC-SUBS] Tried change_character_rank('legend')")
+            end
+        end)
+
+        pcall(function()
+            if obj.set_rank then
+                obj:set_rank(1000)
+                printf("[TPC-SUBS] Tried numeric legend rank")
+            end
+        end)
+    end
+end
+
+local function announce_hit_squad(user, event_type, tier, spawn_count)
+    if not db.actor then
+        return
+    end
+
+    local title = "Monolith Contract"
+    local body = ""
+
+    if string.lower(tier) == "prime" then
+        body = string.format(
+            "MonolithBank accepted %s's Prime contract. A rookie Monolith soldier is hunting you.",
+            user
+        )
+    elseif event_type == "community_sub_gift" then
+        body = string.format(
+            "MonolithBank has sent a hit squad after you. %s gifted %d subs.",
+            user,
+            spawn_count
+        )
+    elseif event_type == "sub_gift" then
+        body = string.format(
+            "MonolithBank has sent a hit squad after you. %s gifted a sub.",
+            user
+        )
+    else
+        body = string.format(
+            "MonolithBank has sent a hit squad after you. %s subscribed.",
+            user
+        )
+    end
+
+    local icon = get_monolith_icon()
+    printf("[TPC-SUBS] PDA icon: " .. tostring(icon))
+
+    db.actor:give_game_news(
+        title,
+        body,
+        icon,
+        0,
+        15000
+    )
+end
+
+local function spawn_hunters_for_sub(user, event_type, tier, count, msg)
+    if not db.actor then
+        printf("[TPC-SUBS] db.actor is nil")
+        return
+    end
+
+    local spawn_count = get_spawn_count(event_type, count)
+    announce_hit_squad(user, event_type, tier, spawn_count)
+
+    for i = 1, spawn_count do
+        local pos, lv, gv = get_spawn_position(i)
+        if not pos or not lv or not gv then
+            printf("[TPC-SUBS] Failed to get spawn position")
+            break
+        end
+
+        local section = get_spawn_section_for_sub(tier)
+        printf("[TPC-SUBS] Spawning hunter " .. tostring(i) .. "/" .. tostring(spawn_count) .. ": " .. tostring(section))
+
+        local ok, spawned = pcall(function()
+            return alife():create(section, pos, lv, gv)
+        end)
+
+        if not ok or not spawned then
+            printf("[TPC-SUBS] Spawn failed for hunter " .. tostring(i))
+        else
+            local obj = resolve_spawned_object(spawned)
+            if obj then
+                try_configure_hunter(obj, user, tier)
+            else
+                printf("[TPC-SUBS] Spawned hunter object not resolved immediately")
+            end
+        end
+    end
+end
+
+local function process_queue()
+    local content = read_file()
+    if not content or content == "" then
+        return
+    end
+
+    local lines = get_lines(content)
+    local count = #lines
+
+    if count <= 0 then
+        return
+    end
+
+    printf(string.format("[TPC-SUBS] Events detected: %d", count))
+
+    for i = 1, count do
+        local line = lines[i]
+        if line then
+            local user, event_type, tier, gift_count, msg = parse_sub_line(line)
+            if user and event_type and tier and gift_count then
+                spawn_hunters_for_sub(user, event_type, tier, gift_count, msg)
+            end
+        end
+    end
+
+    clear_queue_file()
+end
+
+local function on_update()
+    local t = time_global()
+    if t - last_time < 100 then
+        return
+    end
+
+    last_time = t
+    process_queue()
+end
+
+local function actor_on_update()
+    on_update()
+end
+
+RegisterScriptCallback("actor_on_update", actor_on_update)
+
+function on_game_start()
+    printf("[TPC-SUBS] Game start")
+    last_time = time_global()
+end
+
+printf("[TPC-SUBS] Script initialized")

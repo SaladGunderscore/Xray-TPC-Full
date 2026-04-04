@@ -1,0 +1,317 @@
+-- tpc_bits_actions.script - TPC Bits consumer with custom Monolith icon
+
+local queue_file_candidates = {
+    "gamedata\\scripts\\tpc_bits_queue.txt",
+    "..\\gamedata\\scripts\\tpc_bits_queue.txt",
+    "..\\..\\gamedata\\scripts\\tpc_bits_queue.txt",
+    "tpc_bits_queue.txt"
+}
+
+local queue_file = nil
+local last_time = 0
+
+math.randomseed(time_global())
+
+printf("[TPC-BITS] === TPC Bits Actions Loaded ===")
+
+local function find_existing_file(candidates, label)
+    for i = 1, #candidates do
+        local path = candidates[i]
+        local f = io.open(path, "r")
+        if f then
+            f:close()
+            printf("[TPC-BITS] " .. label .. " found: " .. path)
+            return path
+        end
+    end
+
+    printf("[TPC-BITS] " .. label .. " not found")
+    return nil
+end
+
+local function read_file()
+    if not queue_file then
+        queue_file = find_existing_file(queue_file_candidates, "Queue file")
+        if not queue_file then
+            return nil
+        end
+    end
+
+    local f = io.open(queue_file, "r")
+    if not f then
+        printf("[TPC-BITS] Queue file vanished, re-probing")
+        queue_file = nil
+        return nil
+    end
+
+    local content = f:read("*all")
+    f:close()
+
+    return content or ""
+end
+
+local function clear_queue_file()
+    if not queue_file then
+        return false
+    end
+
+    local f = io.open(queue_file, "w")
+    if not f then
+        printf("[TPC-BITS] Failed to clear queue file: " .. tostring(queue_file))
+        return false
+    end
+
+    f:write("")
+    f:close()
+
+    printf("[TPC-BITS] Queue file cleared")
+    return true
+end
+
+local function get_lines(content)
+    local lines = {}
+
+    for line in string.gmatch(content, "[^\r\n]+") do
+        if line ~= "" then
+            table.insert(lines, line)
+        end
+    end
+
+    return lines
+end
+
+local function sanitize_text(text)
+    if not text then
+        return ""
+    end
+
+    text = tostring(text)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    text = string.gsub(text, "%s%s+", " ")
+    text = string.gsub(text, "\t", " ")
+
+    return text
+end
+
+local function parse_bits_line(line)
+    line = sanitize_text(line)
+    if line == "" then
+        return nil, nil, nil, nil
+    end
+
+    local parts = {}
+    for part in string.gmatch(line, "([^|]+)") do
+        table.insert(parts, sanitize_text(part))
+    end
+
+    if #parts < 4 then
+        printf("[TPC-BITS] Bad bits line: " .. tostring(line))
+        return nil, nil, nil, nil
+    end
+
+    local user = parts[1]
+    local bits = tonumber(parts[2]) or 0
+    local event_type = parts[3]
+    local msg = parts[4]
+
+    if user == "" or bits <= 0 or event_type == "" then
+        printf("[TPC-BITS] Invalid bits line: " .. tostring(line))
+        return nil, nil, nil, nil
+    end
+
+    return user, bits, event_type, msg
+end
+
+local function get_money_loss(bits)
+    local loss = bits * 10
+
+    if loss > 15000 then
+        loss = 15000
+    end
+
+    return loss
+end
+
+local function get_bits_title(bits)
+    if bits >= 10000 then
+        return "Catastrophic Signal"
+    elseif bits >= 5000 then
+        return "Extreme Transmission"
+    elseif bits >= 1000 then
+        return "Major Transmission"
+    elseif bits >= 500 then
+        return "Heavy Interference"
+    elseif bits >= 100 then
+        return "Priority Signal"
+    else
+        return "Bits Activity"
+    end
+end
+
+local function get_bits_body(user, bits, event_type, msg, loss)
+    msg = sanitize_text(msg)
+
+    if msg ~= "" then
+        return string.format(
+            "%s sent %d bits. You lost %d RU. %s",
+            user,
+            bits,
+            loss,
+            msg
+        )
+    end
+
+    return string.format(
+        "%s sent %d bits. You lost %d RU.",
+        user,
+        bits,
+        loss
+    )
+end
+
+local function apply_money_loss(loss)
+    if not db.actor then
+        printf("[TPC-BITS] db.actor is nil during money loss")
+        return false, 0, 0
+    end
+
+    local current_money = db.actor:money()
+    if not current_money then
+        printf("[TPC-BITS] Failed to read actor money")
+        return false, 0, 0
+    end
+
+    local new_money = current_money - loss
+    if new_money < 0 then
+        new_money = 0
+    end
+
+    local actual_loss = current_money - new_money
+
+    if actual_loss > 0 then
+        db.actor:give_money(-actual_loss)
+    end
+
+    printf(
+        "[TPC-BITS] Money: " ..
+        tostring(current_money) ..
+        " -> " ..
+        tostring(new_money) ..
+        " (lost " ..
+        tostring(actual_loss) ..
+        " RU)"
+    )
+
+    return true, current_money, new_money
+end
+
+local function send_broke_message()
+    if not db.actor then
+        return
+    end
+
+    db.actor:give_game_news(
+        "Funds Depleted",
+        "MonolithBank has wiped your account clean. You are broke.",
+        "tpc_bits_monolith",
+        0,
+        15000
+    )
+
+    printf("[TPC-BITS] Broke message sent")
+end
+
+local function handle_bits_event(user, bits, event_type, msg)
+    if not db.actor then
+        printf("[TPC-BITS] db.actor is nil")
+        return
+    end
+
+    user = "MonolithBank"
+
+    local loss = get_money_loss(bits)
+    local title = get_bits_title(bits)
+    local body = get_bits_body(user, bits, event_type, msg, loss)
+    local icon = "tpc_bits_monolith"
+
+    printf("[TPC-BITS] User: " .. tostring(user))
+    printf("[TPC-BITS] Bits: " .. tostring(bits))
+    printf("[TPC-BITS] Type: " .. tostring(event_type))
+    printf("[TPC-BITS] Msg: " .. tostring(msg))
+    printf("[TPC-BITS] Loss: " .. tostring(loss))
+    printf("[TPC-BITS] Icon: " .. tostring(icon))
+
+    local ok, old_money, new_money = apply_money_loss(loss)
+
+    db.actor:give_game_news(title, body, icon, 0, 15000)
+
+    if ok and old_money > 0 and new_money <= 0 then
+        send_broke_message()
+    end
+
+    if bits >= 10000 then
+        printf("[TPC-BITS] Trigger tier: 10000+")
+    elseif bits >= 5000 then
+        printf("[TPC-BITS] Trigger tier: 5000+")
+    elseif bits >= 1000 then
+        printf("[TPC-BITS] Trigger tier: 1000+")
+    elseif bits >= 500 then
+        printf("[TPC-BITS] Trigger tier: 500+")
+    elseif bits >= 100 then
+        printf("[TPC-BITS] Trigger tier: 100+")
+    else
+        printf("[TPC-BITS] Trigger tier: under 100")
+    end
+end
+
+local function process_queue()
+    local content = read_file()
+    if not content or content == "" then
+        return
+    end
+
+    local lines = get_lines(content)
+    local count = #lines
+
+    if count <= 0 then
+        return
+    end
+
+    printf(string.format("[TPC-BITS] Events detected: %d", count))
+
+    for i = 1, count do
+        local line = lines[i]
+        if line then
+            local user, bits, event_type, msg = parse_bits_line(line)
+            if user and bits and event_type and msg then
+                handle_bits_event(user, bits, event_type, msg)
+            end
+        end
+    end
+
+    clear_queue_file()
+end
+
+local function on_update()
+    local t = time_global()
+    if t - last_time < 100 then
+        return
+    end
+
+    last_time = t
+    process_queue()
+end
+
+local function actor_on_update()
+    on_update()
+end
+
+RegisterScriptCallback("actor_on_update", actor_on_update)
+
+function on_game_start()
+    printf("[TPC-BITS] Game start")
+    last_time = time_global()
+end
+
+printf("[TPC-BITS] Script initialized")

@@ -1,0 +1,261 @@
+-- twitch_pda_chat.script - GAMMA / ANOMALY 1.5.3 COMPAT VERSION
+
+local queue_file_candidates = {
+    "gamedata\\scripts\\twitch_chat_queue.txt",
+    "..\\gamedata\\scripts\\twitch_chat_queue.txt",
+    "..\\..\\gamedata\\scripts\\twitch_chat_queue.txt",
+    "twitch_chat_queue.txt"
+}
+
+local icon_script_candidates = {
+    "gamedata\\scripts\\twitch_pda_icons.script",
+    "..\\gamedata\\scripts\\twitch_pda_icons.script",
+    "..\\..\\gamedata\\scripts\\twitch_pda_icons.script",
+    "twitch_pda_icons.script"
+}
+
+local queue_file = nil
+local icon_script_file = nil
+local last_time = 0
+
+math.randomseed(time_global())
+
+printf("[TwitchPDA] === COMPAT VERSION LOADED ===")
+
+local chatter_titles = {
+    "Zone Chatter",
+    "PDA Message",
+    "Open Frequency",
+    "Incoming Transmission",
+    "Field Report"
+}
+
+local chatter_templates = {
+    "%s: %s",
+    "%s reporting: %s",
+    "%s on comms: %s",
+    "%s checking in: %s",
+    "%s broadcasts: %s",
+    "%s over the wire: %s",
+    "%s reports movement: %s",
+    "%s transmitting: %s"
+}
+
+local function find_existing_file(candidates, label)
+    for i = 1, #candidates do
+        local path = candidates[i]
+        local f = io.open(path, "r")
+        if f then
+            f:close()
+            printf("[TwitchPDA] " .. label .. " found: " .. path)
+            return path
+        end
+    end
+
+    printf("[TwitchPDA] " .. label .. " not found")
+    return nil
+end
+
+local function load_icon_script()
+    twitch_pda_icons = nil
+
+    icon_script_file = find_existing_file(icon_script_candidates, "Icon script")
+    if not icon_script_file then
+        printf("[TwitchPDA] Using fallback icon only")
+        return
+    end
+
+    local ok, err = pcall(function()
+        dofile(icon_script_file)
+    end)
+
+    if not ok then
+        printf("[TwitchPDA] Failed to execute icon script: " .. tostring(err))
+        return
+    end
+
+    if twitch_pda_icons and twitch_pda_icons.get_random_icon then
+        printf("[TwitchPDA] Icon script loaded successfully")
+    else
+        printf("[TwitchPDA] Icon script loaded, but twitch_pda_icons was not populated")
+    end
+end
+
+local function read_file()
+    if not queue_file then
+        queue_file = find_existing_file(queue_file_candidates, "Queue file")
+        if not queue_file then
+            return nil
+        end
+    end
+
+    local f = io.open(queue_file, "r")
+    if not f then
+        printf("[TwitchPDA] Queue file vanished, re-probing")
+        queue_file = nil
+        return nil
+    end
+
+    local content = f:read("*all")
+    f:close()
+
+    return content or ""
+end
+
+local function clear_queue_file()
+    if not queue_file then
+        return false
+    end
+
+    local f = io.open(queue_file, "w")
+    if not f then
+        printf("[TwitchPDA] Failed to clear queue file: " .. tostring(queue_file))
+        return false
+    end
+
+    f:write("")
+    f:close()
+
+    printf("[TwitchPDA] Queue file cleared")
+    return true
+end
+
+local function get_lines(content)
+    local lines = {}
+
+    for line in string.gmatch(content, "[^\r\n]+") do
+        if line ~= "" then
+            table.insert(lines, line)
+        end
+    end
+
+    return lines
+end
+
+local function sanitize_text(text)
+    if not text then
+        return ""
+    end
+
+    text = tostring(text)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    text = string.gsub(text, "%s%s+", " ")
+    text = string.gsub(text, "\t", " ")
+
+    return text
+end
+
+local function parse_line(line)
+    line = sanitize_text(line)
+
+    if line == "" then
+        return nil, nil
+    end
+
+    local sep = string.find(line, "|")
+    if not sep then
+        printf("[TwitchPDA] Bad line format: " .. tostring(line))
+        return nil, nil
+    end
+
+    local user = sanitize_text(string.sub(line, 1, sep - 1))
+    local msg = sanitize_text(string.sub(line, sep + 1))
+
+    if user == "" or msg == "" then
+        return nil, nil
+    end
+
+    return user, msg
+end
+
+local function get_chatter_title()
+    return chatter_titles[math.random(#chatter_titles)]
+end
+
+local function format_stalker_chatter(user, msg)
+    local template = chatter_templates[math.random(#chatter_templates)]
+    return string.format(template, user, msg)
+end
+
+local function get_chatter_icon()
+    if twitch_pda_icons and twitch_pda_icons.get_random_icon then
+        local icon = twitch_pda_icons.get_random_icon()
+        if icon and icon ~= "" then
+            return icon
+        end
+    end
+
+    return "ui_inGame2_Messages"
+end
+
+local function send_pda_message(user, msg)
+    if not db.actor then
+        printf("[TwitchPDA] db.actor is nil")
+        return
+    end
+
+    local title = get_chatter_title()
+    local body = format_stalker_chatter(user, msg)
+    local icon = get_chatter_icon()
+
+    printf("[TwitchPDA] Title: " .. title)
+    printf("[TwitchPDA] Body: " .. body)
+    printf("[TwitchPDA] Icon: " .. tostring(icon))
+
+    db.actor:give_game_news(title, body, icon, 0, 15000)
+end
+
+local function process_queue()
+    local content = read_file()
+    if not content or content == "" then
+        return
+    end
+
+    local lines = get_lines(content)
+    local count = #lines
+
+    if count <= 0 then
+        return
+    end
+
+    printf(string.format("[TwitchPDA] New messages detected: %d", count))
+
+    for i = 1, count do
+        local line = lines[i]
+        if line then
+            local user, msg = parse_line(line)
+            if user and msg then
+                send_pda_message(user, msg)
+            end
+        end
+    end
+
+    clear_queue_file()
+end
+
+local function on_update()
+    local t = time_global()
+    if t - last_time < 100 then
+        return
+    end
+
+    last_time = t
+    process_queue()
+end
+
+local function actor_on_update()
+    on_update()
+end
+
+load_icon_script()
+
+RegisterScriptCallback("actor_on_update", actor_on_update)
+
+function on_game_start()
+    printf("[TwitchPDA] Game start")
+    last_time = time_global()
+    load_icon_script()
+end
+
+printf("[TwitchPDA] Script initialized")

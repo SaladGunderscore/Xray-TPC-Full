@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<w>
+    <file name="ui\twitch_bits_monolith">
+        <texture id="tpc_bits_monolith" x="0" y="0" width="128" height="64"/>
+    </file>
+</w>
