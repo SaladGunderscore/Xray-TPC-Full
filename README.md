@@ -24,7 +24,7 @@ Current Modules I have working:
 
 'tpc_bits_bridge_test' - Sends bits to the PDA, The Player loses Rubles each time a bit is donated. (Bits * 10 is the default. This is changed in ../scripts/tpc_bits_actions.script)
 'tpc_subs_bridge_test'- Subscriber functions (Spawns hostile monolith hit squad near the player)
-'twitch_to_stalker' - Chat Functions in PDA 
+'twitch_to_stalker' - Chat Functions in PDA, plans to exclude bots soon. 
 
 PLEASE USE THIS HOWEVER YOU WISH
 
