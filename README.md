@@ -1,3 +1,27 @@
+
+Twitch Chat Integration natively in the PDA using icons from ItsAnchorpoint's Chernobyl Chat Relay Rebirth mod
+
+Twitch Bits Integration to allow users to pay Bits to reduce your in game wallet balance (potentially other options later on for people to use but this is mostly just a basic plugin to get people understanding how they CAN use this mod)
+
+Twitch Subscriber Hit Squads - Every time someone subscribes it spawns a hostile monolith stalker near the player. WIP and plan on making the AI for them focus more on the player to behave more as an actual hit squad.
+
+
+Super easy to install this, all you do is throw it in the ANOMALY gamedata folder. Not gamma's. And it cannot be installed by ModOrganizer.  VFS fucks with some stuff and ModOrganizer functions off of VFS. If the mod isn't working with twitch chat the first issue is you probably installed it with mod organizer.
+
+
+I designed this to work with Anomaly and it works seamlessly with Gamma so it should for other Anomaly based modpacks, cannot be certain if it will work on original titles. It might, it probably won't?
+
+
+
+To start the mod all you need is Python (latest build is sufficient)
+and you open twitch_bridge_config.py in your text editor of choice.
+
+Use the oauth code generator for twitch and plug it into the section with TWITCH_TOKEN with your oauth token in the format provided in the python file, then you just start the bridge_launcher.py 
+
+If you want just the chat feature, you can just run the chat module. Each module has a window that has a couple of test functions (chat module doesn't you can just test in twitch chat to see if thats working, but if twitch chat is working your othe modules should also be working just fine)
+
+
+INSTALLATION
 REQUIRES PYTHON!!!!!!!!!!!!!!!!!!
 
 
